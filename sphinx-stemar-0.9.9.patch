@@ -1,0 +1,694 @@
+diff -crBN sphinx-0.9.9/src/Makefile.am sphinx-stemar/src/Makefile.am
+*** sphinx-0.9.9/src/Makefile.am	2008-12-05 03:07:04.000000000 +0200
+--- sphinx-stemar/src/Makefile.am	2010-04-30 17:05:20.000000000 +0300
+***************
+*** 1,5 ****
+  SRC_SPHINX = sphinx.cpp sphinxexcerpt.cpp sphinxquery.cpp \
+! 	sphinxsoundex.cpp sphinxmetaphone.cpp sphinxstemen.cpp sphinxstemru.cpp sphinxstemcz.cpp \
+  	sphinxutils.cpp md5.cpp sphinxstd.cpp sphinxsort.cpp sphinxexpr.cpp sphinxfilter.cpp
+  
+  noinst_LIBRARIES = libsphinx.a
+--- 1,5 ----
+  SRC_SPHINX = sphinx.cpp sphinxexcerpt.cpp sphinxquery.cpp \
+! 	sphinxsoundex.cpp sphinxmetaphone.cpp sphinxstemen.cpp sphinxstemru.cpp sphinxstemcz.cpp sphinxstemar.cpp \
+  	sphinxutils.cpp md5.cpp sphinxstd.cpp sphinxsort.cpp sphinxexpr.cpp sphinxfilter.cpp
+  
+  noinst_LIBRARIES = libsphinx.a
+diff -crBN sphinx-0.9.9/src/sphinx.cpp sphinx-stemar/src/sphinx.cpp
+*** sphinx-0.9.9/src/sphinx.cpp	2009-11-30 04:13:28.000000000 +0200
+--- sphinx-stemar/src/sphinx.cpp	2010-04-30 19:10:30.000000000 +0300
+***************
+*** 15902,15907 ****
+--- 15902,15908 ----
+  	,SPH_MORPH_STEM_RU_CP1251
+  	,SPH_MORPH_STEM_RU_UTF8
+  	,SPH_MORPH_STEM_CZ
++ 	,SPH_MORPH_STEM_AR_UTF8
+  	,SPH_MORPH_SOUNDEX
+  	,SPH_MORPH_METAPHONE_SBCS
+  	,SPH_MORPH_METAPHONE_UTF8
+***************
+*** 16341,16346 ****
+--- 16342,16353 ----
+  		return AddMorph ( SPH_MORPH_STEM_CZ );
+  	}
+  
++ 	if ( iLength == 7 && !strncmp ( szMorph, "stem_ar", iLength ) )
++ 	{
++ 		stem_ar_init ();
++ 		return AddMorph ( SPH_MORPH_STEM_AR_UTF8 );
++ 	}
++ 
+  	if ( iLength == 9 && !strncmp ( szMorph, "stem_enru", iLength ) )
+  	{
+  		stem_en_init ();
+***************
+*** 16787,16792 ****
+--- 16794,16803 ----
+  		stem_cz ( pWord );
+  		break;
+  
++ 	case SPH_MORPH_STEM_AR_UTF8:
++ 		stem_ar_utf8 ( (WORD*)pWord );
++ 		break;
++ 
+  	case SPH_MORPH_SOUNDEX:
+  		stem_soundex ( pWord );
+  		break;
+diff -crBN sphinx-0.9.9/src/sphinxstemar.cpp sphinx-stemar/src/sphinxstemar.cpp
+*** sphinx-0.9.9/src/sphinxstemar.cpp	1970-01-01 02:00:00.000000000 +0200
+--- sphinx-stemar/src/sphinxstemar.cpp	2010-05-23 08:42:03.000000000 +0300
+***************
+*** 0 ****
+--- 1,613 ----
++ //  The ISRI Arabic Stemmer
++ //
++ //  Algorithm: Kazem Taghva, Rania Elkhoury, and Jeffrey Coombs (2005)
++ //  Author: Ammar Ali <ammarabuali@gmail.com> 
++ //
++ //  The algorithm for this stemmer comes from and is described in:
++ //
++ //    Arabic Stemming Without A Root Dictionary.
++ //    Kazem Taghva, Rania Elkoury, and Jeffery Coombs. 2005.
++ //    Information Science Research Institute (ISRI).
++ //    University of Nevada, Las Vegas, (UNLV).
++ //    URL: http://www.isri.unlv.edu/publications/isripub/Taghva2005b.ps
++ //
++ //  Description excerpt from the original document:
++ //
++ //    The Information Science Research Institute’s (ISRI) Arabic stemmer shares
++ //    many features with the Khoja stemmer. However, the main difference is that
++ //    ISRI stemmer does not use root dictionary. Also, if a root is not found,
++ //    ISRI stemmer returned normalized form, rather than returning the original
++ //    unmodified word.
++ //
++ //  The following extenstion were added as part of this implementation
++ //
++ //    1. Added the (افعوعل) verb form to the original patterns by supporting
++ //       matches of recurring stem letters.
++ //
++ //    2. Added an optional compilation flag for an "aggressive" stemming mode
++ //
++ //    3. Added stripping of kashidas (Tatweel) characters
++ //
++ //  Note: This code is intentionally coded to C semantics and conventions rather
++ //  than C++ to allow for use in other programs with little modification.
++ //
++ // -----------------------------------------------------------------------------
++ 
++ #include <stdio.h>
++ #include <string.h>
++ #include <stdlib.h>
++ #include "sphinx.h"
++ 
++ /**
++  * characters used in affix and word form patterns
++  */
++ #define AR_ALEF_Ha  0xA3D8U // U+0623
++ #define AR_ALEF     0xA7D8U // U+0627
++ #define AR_BA       0xA8D8U // U+0628
++ #define AR_TA_M     0xA9D8U // U+0629
++ #define AR_TA       0xAAD8U // U+062A
++ #define AR_SEEN     0xB3D8U // U+0633
++ #define AR_TATWEEL  0x80D9U // U+0640
++ #define AR_FA       0x81D9U // U+0641
++ #define AR_KAF      0x83D9U // U+0643
++ #define AR_LAM      0x84D9U // U+0644
++ #define AR_MIM      0x85D9U // U+0645
++ #define AR_NOON     0x86D9U // U+0646
++ #define AR_HA       0x87D9U // U+0647
++ #define AR_WAW      0x88D9U // U+0648
++ #define AR_YA       0x8AD9U // U+064A
++ 
++ /**
++  * Extension: used for recurring root character matching
++  */
++ #define MATCH_M     0xB0DBU // 0x06F0
++ #define MATCH_0     MATCH_M
++ #define MATCH_1     0xB1DBU // 0x06F1
++ #define MATCH_2     0xB2DBU // 0x06F2
++ #define MATCH_3     0xB3DBU // 0x06F3
++ #define MATCH_4     0xB4DBU // 0x06F4
++ 
++ /**
++  * CHARACTER SET TESTS
++  */
++ 
++ // AR_HAMZA_SET (U+0621, U+0624, U+0626)
++ #define AR_HAMZA_SET    (c == 0xA1D8U || c == 0xA4D8U || c == 0xA6D8U)
++ 
++ // ALEF_SET (U+0623, U+0625, U+0671)
++ #define AR_ALEF_SET     (c == 0xA3D8U || c == 0xA5D8U || c == 0xB1D9U)
++ 
++ // AR_DIACRITIC  (>= U+064B && <= U+0652)
++ #define AR_DIACRITIC(c) (c == 0x8BD9U || c == 0x8CD9U || c == 0x8DD9U || \
++                          c == 0x8ED9U || c == 0x8FD9U || c == 0x90D9U || \
++                          c == 0x91D9U || c == 0x92D9U)
++ 
++ // AR_KASHIDA (U+0640)
++ #define AR_KASHIDA(c)   (c == 0x80D9U)
++ 
++ 
++ // MACROS
++ // -----------------------------------------------------------------------------
++ // NOTE: the following four macros replace the UnicodeString class functionality
++ // that was used during development. All of which assume 2 byte wide characters.
++ 
++ #define AR_WORD_LENGTH       ((int)(strlen((char*)word) / sizeof(ar_char)))
++ 
++ /**
++  * get "raw" character at index i
++  */
++ #define AR_CHAR_AT(i)    (*((ar_char*)(&word[(i * sizeof(ar_char))])))
++ 
++ /**
++  * set character at index i to c
++  */
++ #define AR_CHAR_SET(i,c)  do { \
++   ar_char *p = (ar_char*) &word[(i * sizeof(ar_char))]; \
++   *p = (ar_char) c; \
++ } while(0)
++ 
++ 
++ /**
++  * remove length chars starting from start, null-terminating to new length
++  */
++ #define AR_WORD_REMOVE(start, length) do { \
++   int remain = ((AR_WORD_LENGTH - (length - start)) * sizeof(ar_char)); \
++   ar_char *s = (ar_char*) &word[(start * sizeof(ar_char))]; \
++   if( remain > 0 ) { \
++     memcpy((void*)s, (void*)(s + length), remain); \
++     s = s + (remain / sizeof(ar_char)); \
++   } \
++   *s = '\0'; \
++ } while(0)
++ 
++ 
++ /**
++  * normalize (replace) all occurances of chars in set to to_char
++  */
++ #define AR_NORMALIZE(set, to_char) do { \
++   int wlen = AR_WORD_LENGTH; \
++   while( wlen > 0 ) { \
++     int ni = wlen - 1; \
++     ar_char c = AR_CHAR_AT(ni); \
++     if( set ) { \
++       AR_CHAR_SET(ni, to_char); \
++     } wlen--; \
++   } \
++ } while(0);
++ 
++ 
++ /**
++  * remove all occurances of chars that match the given macro (e.g. KASHIDA)
++  */
++ #define AR_STRIP(what) do { \
++   int wlen = AR_WORD_LENGTH; \
++   while( wlen > 0 ) { \
++     int si = wlen - 1; \
++     if( AR_ ## what (AR_CHAR_AT(si)) ) { \
++       AR_WORD_REMOVE(si, 1); \
++     } \
++     wlen--; \
++   } \
++ } while(0)
++ 
++ 
++ /**
++  * attempt to match and remove a prefix with the given character count
++  */
++ #define AR_PREFIX(count) do { \
++   int match = ar_match_affix(word, prefix_ ## count, count, 0); \
++   if( match >= 0 ) { \
++     AR_WORD_REMOVE(0, count); \
++   } \
++ } while(0)
++ 
++ 
++ /**
++  * attempt to match and remove a suffix with the given character count
++  */
++ #define AR_SUFFIX(count) do { \
++   int match = ar_match_affix(word, suffix_ ## count, count, 1); \
++   if( match >= 0 ) { \
++     AR_WORD_REMOVE((AR_WORD_LENGTH - count), count); \
++   } \
++ } while(0)
++ 
++ 
++ /**
++  * attempt to match a word form for the given word length that yields a given
++  * stem length
++  */
++ #define AR_FORM(word_length, stem_length) do { \
++   int match = ar_match_form(word, form_ ## word_length ## _ ## stem_length); \
++   if( match >= 0 ) { \
++     return; \
++   } \
++ } while(0)
++ 
++ 
++ /**
++  * TYPES
++  */
++ typedef unsigned short ar_char;
++ 
++ typedef struct ar_affix_t {
++   ar_char   chars[4];
++ } affix;
++ 
++ typedef struct ar_form_entry_t {
++   short     at;  // index to match at
++   ar_char   cp;  // code point to match
++ } ar_point;
++ 
++ typedef struct ar_form_t {
++   struct    ar_form_entry_t  entry[4];
++ } ar_form;
++ 
++ 
++ /**
++  * PREFIX LOOKUP TABLES
++  */
++ 
++ /**
++  * 3 letter prefixes
++  */
++ struct ar_affix_t prefix_3[] = {
++   /* 00 */  {{ AR_WAW,   AR_LAM,     AR_LAM,   0x00 }},
++   /* 01 */  {{ AR_WAW,   AR_ALEF,    AR_LAM,   0x00 }},
++   /* 02 */  {{ AR_KAF,   AR_ALEF,    AR_LAM,   0x00 }},
++   /* 03 */  {{ AR_BA,    AR_ALEF,    AR_LAM,   0x00 }},
++ 
++   // Extensions
++   /* 04 */  {{ AR_ALEF,  AR_SEEN,    AR_TA,    0x00 }},
++   /* 05 */  {{ AR_WAW,   AR_BA,      AR_MIM,   0x00 }},
++   /* 06 */  {{ AR_WAW,   AR_BA,      AR_ALEF,  0x00 }},
++   {{0x00}}
++ };
++ 
++ /**
++  * 2 letter prefixes
++  */
++ struct ar_affix_t prefix_2[] = {
++   /* 00 */  {{ AR_ALEF,  AR_LAM,   0x00 }},
++   /* 01 */  {{ AR_LAM,   AR_LAM,   0x00 }},
++   {{0x00}}
++ };
++ 
++ /**
++  * single letter prefixes
++  */
++ struct ar_affix_t prefix_1[] = {
++   /* 00 */  {{ AR_ALEF,  0x00 }},
++   /* 01 */  {{ AR_BA,    0x00 }},
++   /* 02 */  {{ AR_TA,    0x00 }},
++   /* 03 */  {{ AR_SEEN,  0x00 }},
++   /* 04 */  {{ AR_FA,    0x00 }},
++   /* 05 */  {{ AR_LAM,   0x00 }},
++   /* 06 */  {{ AR_NOON,  0x00 }},
++   /* 07 */  {{ AR_WAW,   0x00 }},
++   /* 08 */  {{ AR_YA,    0x00 }},
++   {{0x00}}
++ };
++ 
++ 
++ /**
++  * SUFFIX LOOKUP TABLES
++  */
++ 
++ /**
++  * 3 letter suffixes
++  */
++ struct ar_affix_t suffix_3[] = {
++   /* 00 */  {{ AR_TA,    AR_MIM,   AR_LAM,   0x00 }},
++   /* 01 */  {{ AR_HA,    AR_MIM,   AR_LAM,   0x00 }},
++   /* 02 */  {{ AR_TA,    AR_ALEF,  AR_NOON,  0x00 }},
++   /* 03 */  {{ AR_TA,    AR_YA,    AR_NOON,  0x00 }},
++   /* 04 */  {{ AR_KAF,   AR_MIM,   AR_LAM,   0x00 }},
++   {{0x00}}
++ };
++ 
++ /**
++  * 2 letter suffixes
++  */
++ struct ar_affix_t suffix_2[] = {
++   /* 00 */  {{ AR_WAW,   AR_NOON,  0x00 }},
++   /* 01 */  {{ AR_ALEF,  AR_TA,    0x00 }},
++   /* 02 */  {{ AR_ALEF,  AR_NOON,  0x00 }},
++   /* 03 */  {{ AR_YA,    AR_NOON,  0x00 }},
++   /* 04 */  {{ AR_TA,    AR_NOON,  0x00 }},
++   /* 05 */  {{ AR_KAF,   AR_MIM,   0x00 }},
++   /* 06 */  {{ AR_HA,    AR_NOON,  0x00 }},
++   /* 07 */  {{ AR_NOON,  AR_ALEF,  0x00 }},
++   /* 08 */  {{ AR_YA,    AR_ALEF,  0x00 }},
++   /* 09 */  {{ AR_HA,    AR_ALEF,  0x00 }},
++   /* 10 */  {{ AR_TA,    AR_MIM,   0x00 }},
++   /* 11 */  {{ AR_KAF,   AR_NOON,  0x00 }},
++   /* 12 */  {{ AR_NOON,  AR_YA,    0x00 }},
++   /* 13 */  {{ AR_WAW,   AR_ALEF,  0x00 }},
++   /* 14 */  {{ AR_MIM,   AR_ALEF,  0x00 }},
++   /* 15 */  {{ AR_HA,    AR_MIM,   0x00 }},
++ 
++   // Extensions:
++   /* 16 */  {{ AR_WAW,   AR_HA,    0x00 }},
++   {{0x00}}
++ };
++ 
++ /**
++  * single letter suffixes
++  */
++ struct ar_affix_t suffix_1[] = {
++   /* 00 */  {{ AR_ALEF,  0x00 }},
++   /* 01 */  {{ AR_TA_M,  0x00 }},
++   /* 02 */  {{ AR_TA,    0x00 }},
++   /* 03 */  {{ AR_KAF,   0x00 }},
++   /* 04 */  {{ AR_NOON,  0x00 }},
++   /* 05 */  {{ AR_HA,    0x00 }},
++   /* 06 */  {{ AR_YA,    0x00 }},
++   {{0x00}}
++ };
++ 
++ 
++ /**
++  * FORMS
++  */
++ 
++ /**
++  * forms for 4 letter words that yield a 3 letter stem
++  */
++ struct ar_form_t form_4_3[] = {
++   /* 00 */  {{ {3,      AR_TA_M},  {0xFF, 0x00} }},
++   /* 01 */  {{ {1,      AR_ALEF},  {0xFF, 0x00} }},
++   /* 02 */  {{ {0,      AR_MIM},   {0xFF, 0x00} }}, // originally at index 05
++   /* 03 */  {{ {2,      AR_WAW},   {0xFF, 0x00} }},
++   /* 04 */  {{ {2,      AR_ALEF},  {0xFF, 0x00} }},
++   /* 05 */  {{ {2,      AR_YA},    {0xFF, 0x00} }},
++   {{ {0xFF,   0x00} }}
++ };
++ 
++ /**
++  * forms for 5 letter words that yield a 3 letter stem
++  */
++ struct ar_form_t form_5_3[] = {
++   /* 00 */  {{ {0,      AR_TA},    {2,  AR_ALEF},  {0xFF, 0x00} }},
++   /* 01 */  {{ {0,      AR_ALEF},  {2,  AR_TA},    {0xFF, 0x00} }},
++   /* 02 */  {{ {0,      AR_ALEF},  {3,  AR_ALEF},  {0xFF, 0x00} }},
++   /* 03 */  {{ {0,      AR_ALEF},  {2,  AR_ALEF},  {0xFF, 0x00} }},
++   /* 04 */  {{ {2,      AR_ALEF},  {4,  AR_TA_M},  {0xFF, 0x00} }},
++   /* 05 */  {{ {3,      AR_ALEF},  {4,  AR_NOON},  {0xFF, 0x00} }},
++   /* 06 */  {{ {2,      AR_WAW},   {4,  AR_TA_M},  {0xFF, 0x00} }},
++   /* 07 */  {{ {0,      AR_TA},    {4,  AR_TA_M},  {0xFF, 0x00} }},
++   /* 08 */  {{ {0,      AR_TA},    {3,  AR_YA},    {0xFF, 0x00} }},
++   /* 09 */  {{ {0,      AR_MIM},   {4,  AR_TA_M},  {0xFF, 0x00} }},
++   /* 10 */  {{ {0,      AR_MIM},   {2,  AR_ALEF},  {0xFF, 0x00} }},
++   /* 11 */  {{ {0,      AR_MIM},   {3,  AR_WAW},   {0xFF, 0x00} }},
++   /* 12 */  {{ {1,      AR_ALEF},  {3,  AR_WAW},   {0xFF, 0x00} }},
++   /* 13 */  {{ {1,      AR_WAW},   {2,  AR_ALEF},  {0xFF, 0x00} }},
++   /* 14 */  {{ {0,      AR_MIM},   {3,  AR_ALEF},  {0xFF, 0x00} }},
++   /* 15 */  {{ {0,      AR_MIM},   {3,  AR_YA},    {0xFF, 0x00} }},
++   /* 16 */  {{ {0,      AR_ALEF},  {4,  AR_TA_M},  {0xFF, 0x00} }},
++   /* 17 */  {{ {2,      AR_ALEF},  {3,  AR_NOON},  {0xFF, 0x00} }},
++   /* 18 */  {{ {0,      AR_MIM},   {1,  AR_NOON},  {0xFF, 0x00} }},
++   /* 19 */  {{ {0,      AR_MIM},   {2,  AR_TA},    {0xFF, 0x00} }},
++   /* 20 */  {{ {1,      AR_ALEF},  {4,  AR_TA_M},  {0xFF, 0x00} }},
++   /* 21 */  {{ {0,      AR_YA},    {2,  AR_TA},    {0xFF, 0x00} }},
++   /* 22 */  {{ {0,      AR_TA},    {2,  AR_TA},    {0xFF, 0x00} }},
++   /* 23 */  {{ {2,      AR_ALEF},  {4,  AR_YA},    {0xFF, 0x00} }},
++   /* 24 */  {{ {0,      AR_ALEF},  {1,  AR_NOON},  {0xFF, 0x00} }},
++ 
++   /* Extensions */
++   /* 25 */  {{ {1,      AR_TA},    {4,  AR_WAW},   {0xFF, 0x00} }},
++   /* 26 */  {{ {0,      AR_MIM},   {1,  AR_TA},    {0xFF, 0x00} }},
++   /* 27 */  {{ {0,      AR_TA},    {4,  AR_TA},    {0xFF, 0x00} }},
++   /* 28 */  {{ {1,      AR_ALEF},  {3,  AR_YA},    {0xFF, 0x00} }},
++   {{ {0xFF,   0x00} }}
++ };
++ 
++ /**
++  * forms for 5 letter words that yield a 4 letter stem
++  */
++ struct ar_form_t form_5_4[] = {
++   /* 00 */  {{ {0,      AR_TA},    {0xFF, 0x00} }},
++   /* 01 */  {{ {0,      AR_ALEF},  {0xFF, 0x00} }},
++   /* 02 */  {{ {0,      AR_MIM},   {0xFF, 0x00} }},
++   /* 03 */  {{ {4,      AR_TA_M},  {0xFF, 0x00} }},
++   /* 04 */  {{ {2,      AR_ALEF},  {0xFF, 0x00} }},
++   {{ {0xFF,   0x00} }}
++ };
++ 
++ /**
++  * forms for 6 letter words that yield a 3 letter stem
++  */
++ struct ar_form_t form_6_3[] = {
++   /* 00 */  {{ {0,      AR_ALEF},  {1,  AR_SEEN},  {2,  AR_TA},    {0xFF, 0x00} }},
++   /* 01 */  {{ {0,      AR_MIM},   {3,  AR_ALEF},  {5,  AR_TA_M},  {0xFF, 0x00} }},
++   /* 02 */  {{ {0,      AR_ALEF},  {2,  AR_TA},    {4,  AR_ALEF},  {0xFF, 0x00} }},
++ 
++   /* Extensions match recurring 2nd root letter */
++   /* 03 */  {{ {0,      AR_ALEF},  {3,  AR_WAW},   {4,  MATCH_2},  {0xFF, 0x00} }},
++ 
++   /* 04 */  {{ {0,      AR_MIM},   {1,  AR_SEEN},  {2,  AR_TA},    {0xFF, 0x00} }},
++ 
++   /* Extensions */
++   /* 05 */  {{ {0,      AR_MIM},   {2,  AR_ALEF},  {4,  AR_YA},    {0xFF, 0x00} }},
++   {{ {0xFF,   0x00} }}
++ };
++ 
++ /**
++  * forms for 6 letter words that yield a 4 letter stem
++  */
++ struct ar_form_t form_6_4[] = {
++   /* 00 */  {{ {0,      AR_ALEF},  {4,  AR_ALEF},  {0xFF, 0x00} }},
++   /* 01 */  {{ {0,      AR_MIM},   {1,  AR_TA},    {0xFF, 0x00} }},
++   {{ {0xFF,   0x00} }}
++ };
++ 
++ 
++ /**
++  * match_affix: attempt to match the given word against one of the given affix
++  * rules. This function is called by the AR_FORM macro.
++  */
++ int
++ ar_match_affix(BYTE *word, struct ar_affix_t *affixes, int length, int reverse) {
++   int match = -1, ai = 0;
++ 
++   while( affixes[ai].chars[0] && match < 0 ) {
++     int ci = 0;
++ 
++     while( affixes[ai].chars[ci] && match < 0) {
++       int wi = ci;
++       if( reverse ) {
++         wi = (AR_WORD_LENGTH - length) + ci;
++       }
++ 
++       if( AR_CHAR_AT(wi) != affixes[ai].chars[ci] ) {
++         break;
++       }
++ 
++       ci++;
++ 
++       if( affixes[ai].chars[ci] == 0x00 ) {
++         match = ai;
++       }
++     }
++ 
++     ai++;
++   }
++ 
++   return( match );
++ }
++ 
++ /**
++  * ar_match_form: attempt to match the given word against one of the given form
++  * rules, and if found, extract the stem. This function is called by the AR_FORM
++  * macro.
++  */
++ int
++ ar_match_form(BYTE *word, struct ar_form_t *forms) {
++   int match = -1, fi = 0;
++ 
++   while( forms[fi].entry[0].at != 0xFF && match < 0 ) {
++     int pi = 0;
++ 
++     while( forms[fi].entry[pi].at != 0xFF && match < 0) {
++       if( forms[fi].entry[pi].cp >= MATCH_M && forms[fi].entry[pi].cp <= MATCH_4 ) {
++         int index = forms[fi].entry[pi].cp - MATCH_M;
++         if( AR_CHAR_AT(index) != AR_CHAR_AT(forms[fi].entry[pi].at) ) {
++           break;
++         }
++       } else {
++         if( forms[fi].entry[pi].cp != AR_CHAR_AT(forms[fi].entry[pi].at) ) {
++           break;
++         }
++       }
++ 
++       pi++;
++ 
++       if( forms[fi].entry[pi].at == 0xFF ) {
++         match = fi;
++       }
++     }
++ 
++     fi++;
++   }
++ 
++   /* if match found, extract the stem */
++   if( match >= 0 ) {
++     int pi = 0;
++     while( forms[match].entry[pi].at != 0xFF ) {
++       AR_WORD_REMOVE((forms[match].entry[pi].at - pi), 1);
++       pi++;
++     }
++   }
++ 
++   return( match );
++ }
++ 
++ 
++ /**
++  * four letter words helper function
++  */
++ void
++ ar_word_4(BYTE *word)
++ {
++   AR_FORM(4, 3);
++   AR_SUFFIX(1);
++ 
++   if( AR_WORD_LENGTH == 4 ) {
++     AR_PREFIX(1);
++   }
++ }
++ 
++ 
++ /**
++  * five letter words helper function
++  */
++ void
++ ar_word_5(BYTE *word)
++ {
++   AR_FORM(5, 3);
++   AR_SUFFIX(1);
++ 
++   if( AR_WORD_LENGTH == 4 ) {
++     ar_word_4(word);
++   } else {
++     AR_PREFIX(1);
++ 
++     if( AR_WORD_LENGTH == 4 ) {
++       ar_word_4(word);
++     } else {
++       if( AR_WORD_LENGTH == 5 ) {
++         AR_FORM(5, 4);
++       }
++     }
++   }
++ }
++ 
++ 
++ /**
++  * six letter words helper function
++  */
++ void
++ ar_word_6(BYTE *word)
++ {
++   AR_FORM(6, 3);
++   AR_SUFFIX(1);
++ 
++   if( AR_WORD_LENGTH == 5 ) {
++     ar_word_5(word);
++   } else {
++     AR_PREFIX(1);
++ 
++     if( AR_WORD_LENGTH == 5 ) {
++       ar_word_5(word);
++     } else {
++       if( AR_WORD_LENGTH == 6 ) {
++         AR_FORM(6, 4);
++       }
++     }
++   }
++ }
++ 
++ 
++ /**
++  * ar_stem: main algorithm, attempts to extract the stem of the given word
++  */
++ void
++ ar_stem(BYTE *word)
++ {
++   AR_STRIP( DIACRITIC );
++   AR_STRIP( KASHIDA );  // Extension
++ 
++   AR_NORMALIZE( AR_HAMZA_SET, AR_ALEF_Ha );
++ 
++ #ifdef AR_STEM_AGGRESSIVE
++     // Extension: does both if possible (i.e. 6 and 5, not 6 else 5)
++     if( AR_WORD_LENGTH >= 6 ) { AR_PREFIX(3); }
++     if( AR_WORD_LENGTH >= 5 ) { AR_PREFIX(2); }
++ 
++     if( AR_WORD_LENGTH >= 6 ) { AR_SUFFIX(3); }
++     if( AR_WORD_LENGTH >= 5 ) { AR_SUFFIX(2); }
++ #else
++     // Original: does one only (i.e. 6 or 5, not 6 and 5)
++     if( AR_WORD_LENGTH >= 6 ) { AR_PREFIX(3); }
++     else if( AR_WORD_LENGTH >= 5 ) { AR_PREFIX(2); }
++ 
++     if( AR_WORD_LENGTH >= 6 ) { AR_SUFFIX(3); }
++     else if( AR_WORD_LENGTH >= 5 ) { AR_SUFFIX(2); }
++ #endif /* AR_STEM_AGGRESSIVE */
++ 
++   AR_NORMALIZE( AR_ALEF_SET, AR_ALEF );
++ 
++   if( AR_WORD_LENGTH <= 3 ) { return; }
++ 
++   if( AR_WORD_LENGTH == 4 ) {
++     ar_word_4(word);
++   } else if( AR_WORD_LENGTH == 5 ) {
++     ar_word_5(word);
++   } else if( AR_WORD_LENGTH == 6 ) {
++     ar_word_6(word);
++   } else if( AR_WORD_LENGTH == 7 ) {
++     AR_SUFFIX(1);
++ 
++     if( AR_WORD_LENGTH == 6 ) {
++       ar_word_6(word);
++     } else {
++       AR_PREFIX(1);
++ 
++       if( AR_WORD_LENGTH == 6 ) {
++         ar_word_6(word);
++       }
++     }
++   }
++ }
++ 
++ void
++ stem_ar_utf8(WORD *word)
++ {
++   ar_stem((BYTE*)word);
++ }
++ 
++ 
++ void
++ stem_ar_init(void)
++ {
++ }
+diff -crBN sphinx-0.9.9/src/sphinxstem.h sphinx-stemar/src/sphinxstem.h
+*** sphinx-0.9.9/src/sphinxstem.h	2008-07-09 18:42:26.000000000 +0300
+--- sphinx-stemar/src/sphinxstem.h	2010-04-30 19:08:21.000000000 +0300
+***************
+*** 37,42 ****
+--- 37,48 ----
+  /// stem lowercase Czech word
+  void	stem_cz ( BYTE * pWord );
+  
++ /// initialize Arabic stemmer
++ void	stem_ar_init ();
++ 
++ /// stem Arabic word in UTF-8 encoding
++ void	stem_ar_utf8 ( WORD * pWord );
++ 
+  /// calculate soundex in-place if the word is lowercase English letters only;
+  /// do nothing if it's not
+  void	stem_soundex ( BYTE * pWord );

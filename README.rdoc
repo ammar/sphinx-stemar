@@ -1,0 +1,72 @@
+= Arabic Stemmer for Sphinx
+
+== What
+Patches that add Arabic stemming to the Sphinx[http://sphinxsearch.com/] search engine.
+
+The stemming algorithm used in these patches comes from and is described in:
+
+  Arabic Stemming Without A Root Dictionary.
+  Kazem Taghva, Rania Elkoury, and Jeffery Coombs. 2005.
+  Information Science Research Institute (ISRI).
+  University of Nevada, Las Vegas, (UNLV).
+  URL: http://www.isri.unlv.edu/publications/isripub/Taghva2005b.ps
+
+
+== The Patches
+There are two patches so far:
+
+* sphinx-stemar-0.9.9.patch is for version 0.9.9 (not rc1 or rc2) 
+* sphinx-stemar-1.10-beta.patch is for version 1.10-beta (works on trunk too, at the time of this writing) 
+
+
+== How to apply
+
+* Prerequisites
+
+  Make sure you have the build essentials (gcc, make, etc.) and the autoconf tools
+  installed on your system
+
+* Fetch and extract the sphinx version you're interested in...
+
+    wget http://www.sphinxsearch.com/downloads/sphinx-X.X.X.tar.gz
+    tar -xzf sphinx-X.X.X.tar.gz
+
+* Or checkout trunk
+
+    svn checkout http://sphinxsearch.googlecode.com/svn/trunk trunk
+
+* Download the matching patch next to the sphinx root directory
+
+* From the root of the sphinx source directory
+
+  # verify that the patch works
+    patch --dry-run -p1 -i ../sphinx-stemar-X.X.X.patch
+  
+  # apply it if no errors were reported
+    patch -p1 -i ../sphinx-stemar.patch
+  
+  # regenrate Makefile.in from Makefile.am
+    autoreconf
+
+  # build as usual
+    ./configure
+    make
+    sudo make install
+
+== Notes
+Unfortunately, there are no instructions and/or guidelines for submiting patches
+to the sphinx project. After asking on the project's forum, it seemed that the
+best option, based on the suggestions I received, is to submit the patch through
+the project's bug tracking system. The issue is at:
+
+  http://www.sphinxsearch.com/bugs/view.php?id=519
+
+There has been no response to date, and I'm not sure why. It could be because
+the patches are not up to the project's standards (I would like to know what
+they are), don't have any tests (couldn't figure out the cryptic test harness,
+but I keep trying), or some other mysterious reason.
+
+Anyway, the stemmer is usable and quite useful. It beats not having any stemming
+at all. After all, no stemming algorithm is 100% effective, AFAIK. This one is
+no exception.
+
