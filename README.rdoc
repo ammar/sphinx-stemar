@@ -1,5 +1,11 @@
 = Arabic Stemmer for Sphinx
 
+== UPDATE
+This patch is now included in sphinx's trunk and might be included in future releases. For the time being, it can be found here[http://code.google.com/p/sphinxsearch/source/browse/trunk/src/sphinxstemar.cpp]
+
+Special thanks to shodan (Andrew Aksyonoff) for taking the time to review, lint, clean up, and bring the code up to the project's standards.
+
+
 == What
 Patches that add Arabic stemming to the Sphinx[http://sphinxsearch.com/] search engine.
 
